@@ -120,6 +120,8 @@ class Portfolio(object):
         """
         [float] 实时净值
         """
+        if self._units == 0:
+            return np.nan
         return self.total_value / self._units
 
     @property
@@ -138,6 +140,8 @@ class Portfolio(object):
         """
         [float] 当前最新一天的日收益
         """
+        if self._static_unit_net_value == 0:
+            return np.nan
         return 0 if self._static_unit_net_value == 0 else self.unit_net_value / self._static_unit_net_value - 1
 
     @property
@@ -153,7 +157,8 @@ class Portfolio(object):
         [float] 累计年化收益率
         """
         current_date = Environment.get_instance().trading_dt.date()
-        return self.unit_net_value ** (DAYS_CNT.DAYS_A_YEAR / float((current_date - self.start_date).days + 1)) - 1
+        natural_start_date = Environment.get_instance().config.base.natural_start_date
+        return self.unit_net_value ** (DAYS_CNT.DAYS_A_YEAR / float((current_date - natural_start_date).days + 1)) - 1
 
     @property
     def total_value(self):

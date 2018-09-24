@@ -24,17 +24,19 @@ from functools import wraps
 from types import FunctionType
 
 import pandas as pd
+import numpy as np
 import six
 from dateutil.parser import parse
 
 from rqalpha.api import names
 from rqalpha.environment import Environment
 from rqalpha.execution_context import ExecutionContext
-from rqalpha.utils import to_industry_code, to_sector_name, unwrapper
+from rqalpha.utils import to_industry_code, to_sector_name, unwrapper, is_valid_price
 from rqalpha.utils.exception import patch_user_exc, patch_system_exc, EXC_EXT_NAME, RQInvalidArgument
 from rqalpha.utils.i18n import gettext as _
 # noinspection PyUnresolvedReferences
 from rqalpha.utils.logger import user_log as logger
+from rqalpha.utils.logger import user_system_log
 
 from rqalpha.model.instrument import SectorCodeItem, IndustryCodeItem
 from rqalpha.utils.arg_checker import apply_rules, verify_that
@@ -146,7 +148,13 @@ def cal_style(price, style):
 
     if isinstance(price, OrderStyle):
         # 为了 order_xxx('RB1710', 10, MarketOrder()) 这种写法
+        if isinstance(price, LimitOrder):
+            if np.isnan(price.get_limit_price()):
+                raise RQInvalidArgument(_(u"Limit order price should not be nan."))
         return price
+
+    if np.isnan(price):
+        raise RQInvalidArgument(_(u"Limit order price should not be nan."))
 
     return LimitOrder(price)
 
@@ -177,12 +185,78 @@ def get_open_orders():
 
 
 @export_as_api
+@apply_rules(
+    verify_that("id_or_ins").is_valid_instrument(),
+    verify_that("amount").is_number().is_greater_than(0),
+    verify_that("side").is_in([SIDE.BUY, SIDE.SELL])
+)
+def submit_order(id_or_ins, amount, side, price=None, position_effect=None):
+    """
+    通用下单函数，策略可以通过该函数自由选择参数下单。
+
+    :param id_or_ins: 下单标的物
+    :type id_or_ins: :class:`~Instrument` object | `str`
+
+    :param float amount: 下单量，需为正数
+
+    :param side: 多空方向，多（SIDE.BUY）或空（SIDE.SELL）
+    :type side: :class:`~SIDE` enum
+
+    :param float price: 下单价格，默认为None，表示市价单
+
+    :param position_effect: 开平方向，开仓（POSITION_EFFECT.OPEN），平仓（POSITION.CLOSE）或平今（POSITION_EFFECT.CLOSE_TODAY），交易股票不需要该参数
+    :type position_effect: :class:`~POSITION_EFFECT` enum
+
+    :return: :class:`~Order` object | None
+
+    :example:
+
+    .. code-block:: python
+
+        # 购买 2000 股的平安银行股票，并以市价单发送：
+        submit_order('000001.XSHE', 2000, SIDE.BUY)
+        # 平 10 份 RB1812 多方向的今仓，并以 4000 的价格发送限价单
+        submit_order('RB1812', 10, SIDE.SELL, price=4000, position_effect=POSITION_EFFECT.CLOSE_TODAY)
+
+    """
+    order_book_id = assure_order_book_id(id_or_ins)
+    env = Environment.get_instance()
+    if env.config.base.run_type != RUN_TYPE.BACKTEST:
+        if "88" in order_book_id:
+            raise RQInvalidArgument(_(u"Main Future contracts[88] are not supported in paper trading."))
+        if "99" in order_book_id:
+            raise RQInvalidArgument(_(u"Index Future contracts[99] are not supported in paper trading."))
+    style = cal_style(price, None)
+    market_price = env.get_last_price(order_book_id)
+    if not is_valid_price(market_price):
+        user_system_log.warn(
+            _(u"Order Creation Failed: [{order_book_id}] No market data").format(order_book_id=order_book_id)
+        )
+        return
+
+    order = Order.__from_create__(
+        order_book_id=order_book_id,
+        quantity=amount,
+        side=side,
+        style=style,
+        position_effect=position_effect
+    )
+
+    if order.type == ORDER_TYPE.MARKET:
+        order.set_frozen_price(market_price)
+    if env.can_submit_order(order):
+        env.broker.submit_order(order)
+        return order
+
+
+@export_as_api
 @ExecutionContext.enforce_phase(EXECUTION_PHASE.BEFORE_TRADING,
                                 EXECUTION_PHASE.ON_BAR,
                                 EXECUTION_PHASE.ON_TICK,
                                 EXECUTION_PHASE.AFTER_TRADING,
                                 EXECUTION_PHASE.SCHEDULED,
                                 EXECUTION_PHASE.GLOBAL)
+@apply_rules(verify_that('order').is_instance_of(Order))
 def cancel_order(order):
     """
     撤单
@@ -190,8 +264,6 @@ def cancel_order(order):
     :param order: 需要撤销的order对象
     :type order: :class:`~Order` object
     """
-    if order is None:
-        patch_user_exc(KeyError(_(u"Cancel order fail: invalid order id")))
     env = Environment.get_instance()
     if env.can_cancel_order(order):
         env.broker.cancel_order(order)
@@ -433,6 +505,9 @@ def history_bars(order_book_id, bar_count, frequency, fields=None, skip_suspende
     if frequency[-1] == 'm' and env.config.base.frequency == '1d':
         raise RQInvalidArgument('can not get minute history in day back test')
 
+    if frequency[-1] == 'd' and frequency != '1d':
+        raise RQInvalidArgument('invalid frequency')
+
     if adjust_type not in {'pre', 'post', 'none'}:
         raise RuntimeError('invalid adjust_type')
 
@@ -488,8 +563,6 @@ def all_instruments(type=None, date=None):
     FenjiB                      Fenji B Funds, 即分级B类基金
     INDX                        Index, 即指数
     Future                      Futures，即期货，包含股指、国债和商品期货
-    hour                        int - option [1,4]
-    minute                      int - option [1,240]
     =========================   ===================================================
 
     :example:
@@ -831,3 +904,21 @@ def current_snapshot(id_or_symbol):
 
     # PT、实盘直接取最新快照，忽略 frequency, dt 参数
     return env.data_proxy.current_snapshot(order_book_id, frequency, dt)
+
+
+@export_as_api
+def get_positions():
+    booking = Environment.get_instance().booking
+    if not booking:
+        raise RuntimeError(_("Booking has not been set, please check your broker configuration."))
+    return booking.get_positions()
+
+
+@export_as_api
+@apply_rules(verify_that('direction').is_in([POSITION_DIRECTION.LONG, POSITION_DIRECTION.SHORT]))
+def get_position(order_book_id, direction):
+    booking = Environment.get_instance().booking
+    if not booking:
+        raise RuntimeError(_("Booking has not been set, please check your broker configuration."))
+
+    return booking.get_position(order_book_id, direction)

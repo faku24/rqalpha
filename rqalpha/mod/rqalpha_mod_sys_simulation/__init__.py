@@ -23,8 +23,6 @@ __config__ = {
     "signal": False,
     # 启用的回测引擎，目前支持 `current_bar` (当前Bar收盘价撮合) 和 `next_bar` (下一个Bar开盘价撮合)
     "matching_type": "current_bar",
-    # 设置手续费乘数，默认为1
-    "commission_multiplier": 1,
     # price_limit: 在处于涨跌停时，无法买进/卖出，默认开启【在 Signal 模式下，不再禁止买进/卖出，如果开启，则给出警告提示。】
     "price_limit": True,
     # liquidity_limit: 当对手盘没有流动性的时候，无法买进/卖出，默认关闭
@@ -74,14 +72,6 @@ cli.commands['run'].params.append(
         ('--slippage-model', cli_prefix + "slippage_model"),
         type=click.STRING,
         help="[sys_simulation] set slippage model"
-    )
-)
-
-cli.commands['run'].params.append(
-    click.Option(
-        ('-cm', '--commission-multiplier', cli_prefix + "commission_multiplier"),
-        type=click.FLOAT,
-        help="[sys_simulation] set commission multiplier"
     )
 )
 

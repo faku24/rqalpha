@@ -131,6 +131,19 @@ class AbstractAccount(with_metaclass(abc.ABCMeta)):
         raise NotImplementedError
 
 
+class AbstractBookingPosition(with_metaclass(abc.ABCMeta)):
+
+    @property
+    @abc.abstractmethod
+    def order_book_id(self):
+        raise NotImplementedError
+
+    @property
+    @abc.abstractmethod
+    def direction(self):
+        raise NotImplementedError
+
+
 class AbstractPosition(with_metaclass(abc.ABCMeta)):
     """
     仓位接口，主要用于构建仓位信息
@@ -397,6 +410,23 @@ class AbstractDataSource(object):
         """
         raise NotImplementedError
 
+    def history_ticks(self, instrument, count, dt):
+        """
+        获取历史tick数据
+
+        :param instrument: 合约对象
+        :type instrument: :class:`~Instrument`
+
+        :param int count: 获取的历史数据数量
+        :param str fields: 返回数据字段
+
+        :param datetime.datetime dt: 时间
+
+        :return: list of `Tick`
+
+        """
+        raise NotImplementedError
+
     def current_snapshot(self, instrument, frequency, dt):
         """
         获得当前市场快照数据。只能在日内交易阶段调用，获取当日调用时点的市场快照数据。
@@ -471,7 +501,7 @@ class AbstractDataSource(object):
         :param datetime.date trading_date: 交易日
         :param datetime.datetime last_dt: 仅返回 last_dt 之后的时间
 
-        :return: Tick
+        :return: Iterable object of Tick
         """
         raise NotImplementedError
 
@@ -495,6 +525,11 @@ class AbstractBroker(with_metaclass(abc.ABCMeta)):
 
         :return: Portfolio
         """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def get_booking(self):
+        raise NotImplementedError
 
     @abc.abstractmethod
     def submit_order(self, order):
@@ -617,3 +652,18 @@ class AbstractFrontendValidator(with_metaclass(abc.ABCMeta)):
     def can_cancel_order(self, account, order):
         # FIXME: need a better name
         raise NotImplementedError
+
+
+class AbstractTransactionCostDecider((with_metaclass(abc.ABCMeta))):
+    @abc.abstractmethod
+    def get_trade_tax(self, trade):
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def get_trade_commission(self, trade):
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def get_order_transaction_cost(self, order):
+        raise NotImplementedError
+
