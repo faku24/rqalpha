@@ -13,15 +13,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-import six
 import os
 import pickle
-import numpy as np
-import pandas as pd
-
+import numbers
 from collections import defaultdict
 from enum import Enum
+
+import six
+import numpy as np
+import pandas as pd
 
 from rqalpha.const import EXIT_CODE, DEFAULT_ACCOUNT_TYPE
 from rqalpha.events import EVENT
@@ -50,11 +50,15 @@ class AnalyserMod(AbstractMod):
         self._mod_config = mod_config
         self._enabled = (self._mod_config.record or self._mod_config.plot or self._mod_config.output_file or
                          self._mod_config.plot_save_file or self._mod_config.report_save_path)
+        env.event_bus.add_listener(EVENT.POST_SYSTEM_INIT, self._subscribe_events)
 
-        if self._enabled:
-            env.event_bus.add_listener(EVENT.POST_AFTER_TRADING, self._collect_daily)
-            env.event_bus.add_listener(EVENT.TRADE, self._collect_trade)
-            env.event_bus.add_listener(EVENT.ORDER_CREATION_PASS, self._collect_order)
+    def _subscribe_events(self, _):
+        if not self._enabled:
+            return
+        self._env.event_bus.add_listener(EVENT.TRADE, self._collect_trade)
+        self._env.event_bus.add_listener(EVENT.ORDER_CREATION_PASS, self._collect_order)
+        if self._env.portfolio:
+            self._env.event_bus.add_listener(EVENT.POST_AFTER_TRADING, self._collect_daily)
 
     def _collect_trade(self, event):
         self._trades.append(self._to_trade_record(event.trade))
@@ -62,7 +66,7 @@ class AnalyserMod(AbstractMod):
     def _collect_order(self, event):
         self._orders.append(event.order)
 
-    def _collect_daily(self, event):
+    def _collect_daily(self, _):
         date = self._env.calendar_dt.date()
         portfolio = self._env.portfolio
         benchmark_portfolio = self._env.benchmark_portfolio
@@ -89,8 +93,8 @@ class AnalyserMod(AbstractMod):
         if isinstance(value, Enum):
             return value.name
 
-        if isinstance(value, (float, np.float64, np.float32, np.float16, np.float)):
-            return round(value, ndigits)
+        if isinstance(value, numbers.Real):
+            return round(float(value), ndigits)
 
         return value
 
@@ -108,6 +112,7 @@ class AnalyserMod(AbstractMod):
     ACCOUNT_FIELDS_MAP = {
         DEFAULT_ACCOUNT_TYPE.STOCK.name: ['dividend_receivable'],
         DEFAULT_ACCOUNT_TYPE.FUTURE.name: ['holding_pnl', 'realized_pnl', 'daily_pnl', 'margin'],
+        DEFAULT_ACCOUNT_TYPE.BOND.name: [],
     }
 
     def _to_account_record(self, date, account):
@@ -132,6 +137,9 @@ class AnalyserMod(AbstractMod):
             'margin', 'margin_rate', 'contract_multiplier', 'last_price',
             'buy_pnl', 'buy_margin', 'buy_quantity', 'buy_avg_open_price',
             'sell_pnl', 'sell_margin', 'sell_quantity', 'sell_avg_open_price'
+        ],
+        DEFAULT_ACCOUNT_TYPE.BOND.name: [
+            'quantity', 'last_price', 'avg_price', 'market_value'
         ],
     }
 
@@ -191,7 +199,7 @@ class AnalyserMod(AbstractMod):
             data_proxy.get_risk_free_rate(
                 self._env.config.base.start_date, self._env.config.base.end_date
             ),
-            (self._env.config.base.natural_end_date - self._env.config.base.natural_start_date).days + 1
+            self._env.data_proxy.count_trading_dates(self._env.config.base.start_date, self._env.config.base.end_date)
         )
         summary.update({
             'alpha': self._safe_convert(risk.alpha, 3),
@@ -241,7 +249,7 @@ class AnalyserMod(AbstractMod):
             benchmark_portfolios = b_df.set_index('date').sort_index()
             result_dict['benchmark_portfolio'] = benchmark_portfolios
 
-        if self._env.plot_store is not None:
+        if not self._env.get_plot_store().empty:
             plots = self._env.get_plot_store().get_plots()
             plots_items = defaultdict(dict)
             for series_name, value_dict in six.iteritems(plots):
@@ -250,6 +258,7 @@ class AnalyserMod(AbstractMod):
                     plots_items[date]["date"] = date
 
             df = pd.DataFrame([dict_data for date, dict_data in six.iteritems(plots_items)])
+
             df["date"] = pd.to_datetime(df["date"])
             df = df.set_index("date").sort_index()
             result_dict["plots"] = df

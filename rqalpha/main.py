@@ -66,10 +66,6 @@ def _adjust_start_date(config, data_proxy):
     config.base.start_date = max(start, config.base.start_date)
     config.base.end_date = min(end, config.base.end_date)
 
-    # for annualized risk indicator calculation
-    config.base.natural_start_date = config.base.start_date
-    config.base.natural_end_date = config.base.end_date
-
     config.base.trading_calendar = data_proxy.get_trading_dates(config.base.start_date, config.base.end_date)
     if len(config.base.trading_calendar) == 0:
         raise patch_user_exc(
@@ -228,7 +224,10 @@ def run(config, source_code=None, user_funcs=None):
 
         broker = env.broker
         assert broker is not None
-        env.portfolio = broker.get_portfolio()
+        try:
+            env.portfolio = broker.get_portfolio()
+        except NotImplementedError:
+            pass
 
         try:
             env.booking = broker.get_booking()
@@ -292,7 +291,8 @@ def run(config, source_code=None, user_funcs=None):
             persist_helper.register('universe', env._universe)
             if isinstance(event_source, Persistable):
                 persist_helper.register('event_source', event_source)
-            persist_helper.register('portfolio', env.portfolio)
+            if env.portfolio:
+                persist_helper.register('portfolio', env.portfolio)
             if env.benchmark_portfolio:
                 persist_helper.register('benchmark_portfolio', env.benchmark_portfolio)
             for name, module in six.iteritems(env.mod_dict):
